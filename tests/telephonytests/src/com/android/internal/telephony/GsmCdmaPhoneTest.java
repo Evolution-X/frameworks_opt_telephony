@@ -63,6 +63,7 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.PersistableBundle;
 import android.os.Process;
+import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.WorkSource;
 import android.preference.PreferenceManager;
@@ -893,6 +894,27 @@ public class GsmCdmaPhoneTest extends TelephonyTest {
         editor.remove(Phone.CF_STATUS + subId1);
         editor.remove(Phone.CF_STATUS + subId2);
         editor.apply();
+    }
+
+    @Test
+    @SmallTest
+    public void testGetUserHandleWithInvalidSubIdReturnsNull() {
+        doReturn(SubscriptionManager.INVALID_SUBSCRIPTION_ID).when(mSubscriptionManagerService)
+                .getSubId(anyInt());
+
+        assertNull(mPhoneUT.getUserHandle());
+        verify(mSubscriptionManager, never()).getSubscriptionUserHandle(anyInt());
+    }
+
+    @Test
+    @SmallTest
+    public void testGetUserHandleReturnsSubscriptionUserHandle() {
+        final int subId = 1;
+        final UserHandle userHandle = UserHandle.of(10);
+        doReturn(subId).when(mSubscriptionManagerService).getSubId(anyInt());
+        when(mSubscriptionManager.getSubscriptionUserHandle(subId)).thenReturn(userHandle);
+
+        assertEquals(userHandle, mPhoneUT.getUserHandle());
     }
 
     @Test
