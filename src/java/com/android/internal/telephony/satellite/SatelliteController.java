@@ -2320,8 +2320,9 @@ public class SatelliteController extends Handler {
                             "CMD_EVALUATE_CARRIER_ROAMING_NTN_ELIGIBILITY_CHANGE")) {
                         break;
                     }
+                    Phone nonNullPhone = Objects.requireNonNull(phone);
                     setLastNotifiedNtnEligibility(eligible);
-                    phone.notifyCarrierRoamingNtnEligibleStateChanged(eligible);
+                    nonNullPhone.notifyCarrierRoamingNtnEligibleStateChanged(eligible);
                 }
                 break;
             }
@@ -9531,9 +9532,11 @@ public class SatelliteController extends Handler {
         if (!shouldNotifyCarrierRoamingNtn(phone, subId, "notifyNtnAvailableServices")) {
             return;
         }
-        plogd("updateLastNotifiedNtnAvailableServicesAndNotify: phoneId= " + phone.getPhoneId());
+        Phone nonNullPhone = Objects.requireNonNull(phone);
+        plogd("updateLastNotifiedNtnAvailableServicesAndNotify: phoneId= "
+                + nonNullPhone.getPhoneId());
         int[] services = getSupportedServicesOnCarrierRoamingNtn(subId);
-        phone.notifyCarrierRoamingNtnAvailableServicesChanged(services);
+        nonNullPhone.notifyCarrierRoamingNtnAvailableServicesChanged(services);
     }
 
     private int[] getAvailableServicesWithEntitlementForSubId(int subId) {
@@ -9778,13 +9781,14 @@ public class SatelliteController extends Handler {
             return;
         }
 
-        NtnSignalStrength currSignalStrength = getCarrierRoamingNtnSignalStrength(phone);
+        Phone nonNullPhone = Objects.requireNonNull(phone);
+        NtnSignalStrength currSignalStrength = getCarrierRoamingNtnSignalStrength(nonNullPhone);
         NtnSignalStrength lastNotifiedSignalStrength =
                 mLastNotifiedCarrierRoamingNtnSignalStrength.get(subId);
         if (lastNotifiedSignalStrength == null
                 || lastNotifiedSignalStrength.getLevel() != currSignalStrength.getLevel()) {
             mLastNotifiedCarrierRoamingNtnSignalStrength.put(subId, currSignalStrength);
-            phone.notifyCarrierRoamingNtnSignalStrengthChanged(currSignalStrength);
+            nonNullPhone.notifyCarrierRoamingNtnSignalStrengthChanged(currSignalStrength);
         }
     }
 
