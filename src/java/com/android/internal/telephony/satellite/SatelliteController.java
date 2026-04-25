@@ -2314,6 +2314,12 @@ public class SatelliteController extends Handler {
                 int selectedSatelliteSubId = getSelectedSatelliteSubId();
                 Phone phone = SatelliteServiceUtils.getPhone(selectedSatelliteSubId);
                 if (eligible) {
+                    if (!shouldNotifyCarrierRoamingNtn(phone, selectedSatelliteSubId,
+                            "CMD_EVALUATE_CARRIER_ROAMING_NTN_ELIGIBILITY_CHANGE")
+                            || !isCarrierRoamingNtnSupported(selectedSatelliteSubId,
+                            "CMD_EVALUATE_CARRIER_ROAMING_NTN_ELIGIBILITY_CHANGE")) {
+                        break;
+                    }
                     setLastNotifiedNtnEligibility(eligible);
                     phone.notifyCarrierRoamingNtnEligibleStateChanged(eligible);
                 }
@@ -3505,16 +3511,14 @@ public class SatelliteController extends Handler {
     @SatelliteManager.SatelliteResult public int registerForSatelliteModemStateChanged(
             @NonNull ISatelliteModemStateCallback callback) {
         plogd("registerForSatelliteModemStateChanged: add Listeners for ModemState");
-        mSatelliteRegistrationFailureListeners.put(callback.asBinder(), callback);
-        mTerrestrialNetworkAvailableChangedListeners.put(callback.asBinder(), callback);
-
-        if (mSatelliteSessionController != null) {
-            mSatelliteSessionController.registerForSatelliteModemStateChanged(callback);
-        } else {
-            ploge("registerForSatelliteModemStateChanged: mSatelliteSessionController"
+        if (mSatelliteSessionController == null) {
+            plogd("registerForSatelliteModemStateChanged: mSatelliteSessionController"
                     + " is not initialized yet");
             return SatelliteManager.SATELLITE_RESULT_INVALID_TELEPHONY_STATE;
         }
+        mSatelliteRegistrationFailureListeners.put(callback.asBinder(), callback);
+        mTerrestrialNetworkAvailableChangedListeners.put(callback.asBinder(), callback);
+        mSatelliteSessionController.registerForSatelliteModemStateChanged(callback);
         return SATELLITE_RESULT_SUCCESS;
     }
 
@@ -3530,7 +3534,7 @@ public class SatelliteController extends Handler {
         if (mSatelliteSessionController != null) {
             mSatelliteSessionController.unregisterForSatelliteModemStateChanged(callback);
         } else {
-            ploge("unregisterForModemStateChanged: mSatelliteSessionController"
+            plogd("unregisterForModemStateChanged: mSatelliteSessionController"
                     + " is not initialized yet");
         }
         plogd("unregisterForModemStateChanged: remove Listeners for ModemState");
@@ -6288,6 +6292,7 @@ public class SatelliteController extends Handler {
         updateSupportedSatelliteServicesForActiveSubscriptions();
         processNewCarrierConfigData(subId);
         resetCarrierRoamingSatelliteModeParams(subId);
+        updateLastNotifiedNtnModeAndNotify(SatelliteServiceUtils.getPhone(subId));
         evaluateCarrierRoamingNtnEligibilityChange();
         sendMessageDelayed(obtainMessage(CMD_EVALUATE_ESOS_PROFILES_PRIORITIZATION),
                 mEvaluateEsosProfilesPrioritizationDurationMillis.get());
@@ -7059,6 +7064,10 @@ public class SatelliteController extends Handler {
         }
 
         int subId = phone.getSubId();
+        if (!shouldNotifyCarrierRoamingNtn(phone, subId,
+                "updateLastNotifiedNtnModeAndNotify")) {
+            return;
+        }
         boolean initialized = mInitialized.computeIfAbsent(subId, k -> false);
         boolean lastNotifiedNtnMode = mLastNotifiedNtnMode.computeIfAbsent(subId, k -> false);
         boolean currNtnMode = isInSatelliteModeForCarrierRoaming(phone);
@@ -7204,7 +7213,7 @@ public class SatelliteController extends Handler {
     private void startNtnEligibilityHysteresisTimer() {
         Phone satellitePhone = getSatellitePhone();
         if (satellitePhone == null) {
-            ploge("startNtnEligibilityHysteresisTimer: mSatellitePhone is null.");
+            plogd("startNtnEligibilityHysteresisTimer: mSatellitePhone is null.");
             return;
         }
 
@@ -7226,7 +7235,13 @@ public class SatelliteController extends Handler {
     private void updateLastNotifiedNtnEligibilityAndNotify(boolean currentNtnEligibility) {
         Phone satellitePhone = getSatellitePhone();
         if (satellitePhone == null) {
-            ploge("notifyNtnEligibility: mSatellitePhone is null");
+            plogd("notifyNtnEligibility: mSatellitePhone is null");
+            return;
+        }
+
+        int notificationSubId = satellitePhone.getSubId();
+        if (!shouldNotifyCarrierRoamingNtn(satellitePhone, notificationSubId,
+                "notifyNtnEligibility")) {
             return;
         }
 
@@ -7235,7 +7250,11 @@ public class SatelliteController extends Handler {
             return;
         }
 
-        int selectedSatelliteSubId = getSelectedSatelliteSubId();
+        if (currentNtnEligibility && !isCarrierRoamingNtnSupported(notificationSubId,
+                "notifyNtnEligibility")) {
+            return;
+        }
+
         plogd("notifyNtnEligibility: phoneId=" + satellitePhone.getPhoneId()
                 + " currentNtnEligibility=" + currentNtnEligibility);
         Boolean lastNotifiedNtnEligibility = getLastNotifiedNtnEligibility();
@@ -7243,7 +7262,7 @@ public class SatelliteController extends Handler {
                 || lastNotifiedNtnEligibility != currentNtnEligibility) {
             setLastNotifiedNtnEligibility(currentNtnEligibility);
             satellitePhone.notifyCarrierRoamingNtnEligibleStateChanged(currentNtnEligibility);
-            updateSatelliteSystemNotification(selectedSatelliteSubId,
+            updateSatelliteSystemNotification(notificationSubId,
                     CarrierConfigManager.CARRIER_ROAMING_NTN_CONNECT_MANUAL,
                     currentNtnEligibility);
         }
@@ -9509,8 +9528,7 @@ public class SatelliteController extends Handler {
 
     private void updateLastNotifiedNtnAvailableServicesAndNotify(int subId) {
         Phone phone = SatelliteServiceUtils.getPhone(subId);
-        if (phone == null) {
-            plogd("notifyNtnAvailableServices: phone is null.");
+        if (!shouldNotifyCarrierRoamingNtn(phone, subId, "notifyNtnAvailableServices")) {
             return;
         }
         plogd("updateLastNotifiedNtnAvailableServicesAndNotify: phoneId= " + phone.getPhoneId());
@@ -9754,12 +9772,13 @@ public class SatelliteController extends Handler {
 
     protected void updateLastNotifiedCarrierRoamingNtnSignalStrengthAndNotify(
             @Nullable Phone phone) {
-        if (phone == null) {
+        int subId = phone != null ? phone.getSubId() : SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+        if (!shouldNotifyCarrierRoamingNtn(phone, subId,
+                "updateLastNotifiedCarrierRoamingNtnSignalStrengthAndNotify")) {
             return;
         }
 
         NtnSignalStrength currSignalStrength = getCarrierRoamingNtnSignalStrength(phone);
-        int subId = phone.getSubId();
         NtnSignalStrength lastNotifiedSignalStrength =
                 mLastNotifiedCarrierRoamingNtnSignalStrength.get(subId);
         if (lastNotifiedSignalStrength == null
@@ -9767,6 +9786,27 @@ public class SatelliteController extends Handler {
             mLastNotifiedCarrierRoamingNtnSignalStrength.put(subId, currSignalStrength);
             phone.notifyCarrierRoamingNtnSignalStrengthChanged(currSignalStrength);
         }
+    }
+
+    private boolean shouldNotifyCarrierRoamingNtn(@Nullable Phone phone, int subId,
+            @NonNull String caller) {
+        if (phone == null) {
+            plogd(caller + ": phone is null");
+            return false;
+        }
+        if (!isValidSubscriptionId(subId)) {
+            plogd(caller + ": invalid subId=" + subId);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean isCarrierRoamingNtnSupported(int subId, @NonNull String caller) {
+        if (!isSatelliteSupportedViaCarrier(subId)) {
+            plogd(caller + ": satellite is not supported via carrier for subId=" + subId);
+            return false;
+        }
+        return true;
     }
 
     /** Returns whether to send SMS to DatagramDispatcher or not. */
