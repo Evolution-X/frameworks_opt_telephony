@@ -1752,7 +1752,7 @@ public class SatelliteControllerTest extends TelephonyTest {
     }
 
     @Test
-    public void testRegisterForSatelliteModemStateChanged() {
+    public void testRegisterForSatelliteModemStateChanged() throws Exception {
         ISatelliteModemStateCallback callback = new ISatelliteModemStateCallback.Stub() {
             @Override
             public void onSatelliteModemStateChanged(int state) {
@@ -1778,6 +1778,8 @@ public class SatelliteControllerTest extends TelephonyTest {
         assertEquals(SATELLITE_RESULT_INVALID_TELEPHONY_STATE, errorCode);
         verify(mMockSatelliteSessionController, never())
                 .registerForSatelliteModemStateChanged(callback);
+        assertEquals(0, getSatelliteListenerMapSize("mSatelliteRegistrationFailureListeners"));
+        assertEquals(0, getSatelliteListenerMapSize("mTerrestrialNetworkAvailableChangedListeners"));
 
         resetSatelliteControllerUTToSupportedAndProvisionedState();
         mSatelliteControllerUT.setSatelliteSessionController(mMockSatelliteSessionController);
@@ -1785,6 +1787,15 @@ public class SatelliteControllerTest extends TelephonyTest {
         errorCode = mSatelliteControllerUT.registerForSatelliteModemStateChanged(callback);
         assertEquals(SATELLITE_RESULT_SUCCESS, errorCode);
         verify(mMockSatelliteSessionController).registerForSatelliteModemStateChanged(callback);
+        assertEquals(1, getSatelliteListenerMapSize("mSatelliteRegistrationFailureListeners"));
+        assertEquals(1, getSatelliteListenerMapSize(
+                "mTerrestrialNetworkAvailableChangedListeners"));
+    }
+
+    private int getSatelliteListenerMapSize(String fieldName) throws Exception {
+        Field field = SatelliteController.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        return ((Map<?, ?>) field.get(mSatelliteControllerUT)).size();
     }
 
     @Test
@@ -4260,6 +4271,39 @@ public class SatelliteControllerTest extends TelephonyTest {
     }
 
     @Test
+    public void testOverrideCarrierRoamingNtnEligibilityChange_clearUsesCurrentPhoneSubId() {
+        mSatelliteControllerUT.setSelectedSatelliteSubId(SUB_ID);
+        mSatelliteControllerUT.overrideCarrierRoamingNtnEligibilityChanged(true, false);
+        clearInvocations(mPhone);
+
+        mSatelliteControllerUT.setSelectedSatelliteSubId(
+                SubscriptionManager.INVALID_SUBSCRIPTION_ID);
+        mSatelliteControllerUT.overrideCarrierRoamingNtnEligibilityChanged(false, false);
+
+        verify(mPhone).notifyCarrierRoamingNtnEligibleStateChanged(eq(false));
+    }
+
+    @Test
+    public void testOverrideCarrierRoamingNtnEligibilityChange_clearAllowedWhenUnsupported() {
+        mSatelliteControllerUT.setSelectedSatelliteSubId(SUB_ID);
+        mSatelliteControllerUT.overrideCarrierRoamingNtnEligibilityChanged(true, false);
+        clearInvocations(mPhone);
+
+        mCarrierConfigBundle.putBoolean(KEY_SATELLITE_ATTACH_SUPPORTED_BOOL, false);
+        mSatelliteControllerUT.overrideCarrierRoamingNtnEligibilityChanged(false, false);
+
+        verify(mPhone).notifyCarrierRoamingNtnEligibleStateChanged(eq(false));
+    }
+
+    @Test
+    public void testOverrideCarrierRoamingNtnEligibilityChange_positiveAllowedWhenUnsupported() {
+        mCarrierConfigBundle.putBoolean(KEY_SATELLITE_ATTACH_SUPPORTED_BOOL, false);
+        mSatelliteControllerUT.overrideCarrierRoamingNtnEligibilityChanged(true, false);
+
+        verify(mPhone).notifyCarrierRoamingNtnEligibleStateChanged(eq(true));
+    }
+
+    @Test
     public void testNotifyNtnEligibilityHysteresisTimedOut() {
         mContextFixture.putBooleanResource(
             R.bool.config_satellite_should_notify_availability, true);
@@ -4356,6 +4400,31 @@ public class SatelliteControllerTest extends TelephonyTest {
         actualSignalStrength = captor.getValue();
         assertEquals(NTN_SIGNAL_STRENGTH_GOOD, actualSignalStrength.getLevel());
         clearInvocations(mPhone);
+    }
+
+    @Test
+    public void testCarrierConfigChanged_clearsModeAndSignalWhenCarrierSupportWithdrawn() {
+        when(mSignalStrength.getLevel()).thenReturn(SignalStrength.SIGNAL_STRENGTH_GOOD);
+        when(mPhone.getSignalStrength()).thenReturn(mSignalStrength);
+        mCarrierConfigBundle.putInt(KEY_SATELLITE_CONNECTION_HYSTERESIS_SEC_INT, 1 * 60);
+        mCarrierConfigBundle.putBoolean(KEY_SATELLITE_ATTACH_SUPPORTED_BOOL, true);
+        invokeCarrierConfigChanged();
+
+        when(mServiceState.isUsingNonTerrestrialNetwork()).thenReturn(true);
+        when(mServiceState.getState()).thenReturn(ServiceState.STATE_IN_SERVICE);
+        sendServiceStateChangedEvent();
+        processAllMessages();
+        verify(mPhone).notifyCarrierRoamingNtnModeChanged(eq(true));
+        clearInvocations(mPhone);
+
+        mCarrierConfigBundle.putBoolean(KEY_SATELLITE_ATTACH_SUPPORTED_BOOL, false);
+        invokeCarrierConfigChanged();
+
+        ArgumentCaptor<NtnSignalStrength> captor = ArgumentCaptor.forClass(NtnSignalStrength.class);
+        assertFalse(mSatelliteControllerUT.isInSatelliteModeForCarrierRoaming(mPhone));
+        verify(mPhone).notifyCarrierRoamingNtnModeChanged(eq(false));
+        verify(mPhone).notifyCarrierRoamingNtnSignalStrengthChanged(captor.capture());
+        assertEquals(NTN_SIGNAL_STRENGTH_NONE, captor.getValue().getLevel());
     }
 
     @Test
