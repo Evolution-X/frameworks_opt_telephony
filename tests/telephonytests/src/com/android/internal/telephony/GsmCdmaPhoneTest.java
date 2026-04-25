@@ -83,6 +83,7 @@ import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.telephony.ims.ImsCallProfile;
+import android.telephony.satellite.NtnSignalStrength;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
@@ -1367,6 +1368,34 @@ public class GsmCdmaPhoneTest extends TelephonyTest {
     }
 
     @Test
+    public void testNrCapabilityChanged_RequestNotSupportedStopsRequery() {
+        mPhoneUT.mCi = mMockCi;
+        PersistableBundle bundle = mContextFixture.getCarrierConfigBundle();
+        bundle.putIntArray(CarrierConfigManager.KEY_CARRIER_NR_AVAILABILITIES_INT_ARRAY,
+                new int[]{
+                    CarrierConfigManager.CARRIER_NR_AVAILABILITY_NSA,
+                    CarrierConfigManager.CARRIER_NR_AVAILABILITY_SA});
+        setIsCarrierConfigForIdentifiedCarrier(bundle, true);
+
+        mPhoneUT.sendMessage(mPhoneUT.obtainMessage(Phone.EVENT_CARRIER_CONFIG_CHANGED));
+        processAllMessages();
+
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(mMockCi, times(1)).isN1ModeEnabled(messageCaptor.capture());
+        AsyncResult.forMessage(messageCaptor.getValue(), null,
+                new CommandException(CommandException.Error.REQUEST_NOT_SUPPORTED));
+        messageCaptor.getValue().sendToTarget();
+        processAllMessages();
+
+        clearInvocations(mMockCi);
+        mPhoneUT.sendMessage(mPhoneUT.obtainMessage(Phone.EVENT_CARRIER_CONFIG_CHANGED));
+        processAllMessages();
+
+        verify(mMockCi, never()).isN1ModeEnabled(any());
+        verify(mMockCi, never()).setN1ModeEnabled(anyBoolean(), any());
+    }
+
+    @Test
     public void testNrCapabilityChanged_firstRequest_ImsChanges() {
         mPhoneUT.mCi = mMockCi;
         Message passthroughMessage = mTestHandler.obtainMessage(0xC0FFEE);
@@ -1398,6 +1427,52 @@ public class GsmCdmaPhoneTest extends TelephonyTest {
 
         verify(mMockCi, times(1)).isN1ModeEnabled(any()); // not called again
         verify(mMockCi, times(1)).setN1ModeEnabled(eq(true), messageCaptor.capture());
+    }
+
+    @Test
+    public void testSetN1ModeEnabled_RequestNotSupportedCachesUnsupported() {
+        mPhoneUT.mCi = mMockCi;
+        Message passthroughMessage = mTestHandler.obtainMessage(0xC0FFEE);
+
+        mPhoneUT.setN1ModeEnabled(false, passthroughMessage);
+        processAllMessages();
+
+        ArgumentCaptor<Message> modemMessageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(mMockCi, times(1)).isN1ModeEnabled(modemMessageCaptor.capture());
+        AsyncResult.forMessage(modemMessageCaptor.getValue(), null,
+                new CommandException(CommandException.Error.REQUEST_NOT_SUPPORTED));
+        modemMessageCaptor.getValue().sendToTarget();
+        processAllMessages();
+
+        ArgumentCaptor<Message> responseCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(mTestHandler, times(1)).sendMessageAtTime(responseCaptor.capture(), anyLong());
+        AsyncResult response = (AsyncResult) responseCaptor.getValue().obj;
+        assertTrue(response.exception instanceof CommandException);
+        assertEquals(CommandException.Error.REQUEST_NOT_SUPPORTED,
+                ((CommandException) response.exception).getCommandError());
+
+        clearInvocations(mMockCi);
+        mPhoneUT.setN1ModeEnabled(true, null);
+        processAllMessages();
+
+        verify(mMockCi, never()).isN1ModeEnabled(any());
+        verify(mMockCi, never()).setN1ModeEnabled(anyBoolean(), any());
+    }
+
+    @Test
+    public void testCarrierRoamingNtnNotifications_skipInvalidSubId() {
+        doReturn(SubscriptionManager.INVALID_SUBSCRIPTION_ID).when(mPhoneUT).getSubId();
+
+        mPhoneUT.notifyCarrierRoamingNtnModeChanged(true);
+        mPhoneUT.notifyCarrierRoamingNtnEligibleStateChanged(true);
+        mPhoneUT.notifyCarrierRoamingNtnAvailableServicesChanged(new int[] {1, 3});
+        mPhoneUT.notifyCarrierRoamingNtnSignalStrengthChanged(
+                new NtnSignalStrength(NtnSignalStrength.NTN_SIGNAL_STRENGTH_GOOD));
+
+        verify(mNotifier, never()).notifyCarrierRoamingNtnModeChanged(any(), anyBoolean());
+        verify(mNotifier, never()).notifyCarrierRoamingNtnEligibleStateChanged(any(), anyBoolean());
+        verify(mNotifier, never()).notifyCarrierRoamingNtnAvailableServicesChanged(any(), any());
+        verify(mNotifier, never()).notifyCarrierRoamingNtnSignalStrengthChanged(any(), any());
     }
 
     private void setupForWpsCallTest() throws Exception {
