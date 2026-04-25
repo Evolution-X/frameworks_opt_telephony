@@ -296,6 +296,7 @@ public class GsmCdmaPhone extends Phone {
     // If this value is null, then the modem value is unknown. If a caller explicitly sets the
     // N1 mode, this value will be initialized before any attempt to set the value in the modem.
     private Boolean mModemN1Mode = null;
+    private boolean mIsN1ModeSupported = true;
 
     // Constructors
 
@@ -2091,6 +2092,10 @@ public class GsmCdmaPhone extends Phone {
             } else {
                 mN1ModeDisallowedReasons.add(N1_MODE_DISALLOWED_REASON_IMS);
             }
+            if (!mIsN1ModeSupported) {
+                sendUnsupportedN1ModeResponse(result);
+                return;
+            }
             if (mModemN1Mode == null) {
                 mCi.isN1ModeEnabled(obtainMessage(EVENT_GET_N1_MODE_ENABLED_DONE, result));
             } else {
@@ -2134,6 +2139,9 @@ public class GsmCdmaPhone extends Phone {
             mN1ModeDisallowedReasons.add(N1_MODE_DISALLOWED_REASON_CARRIER);
         }
 
+        if (!mIsN1ModeSupported) {
+            return;
+        }
         if (mModemN1Mode == null) {
             mCi.isN1ModeEnabled(obtainMessage(EVENT_GET_N1_MODE_ENABLED_DONE));
         } else {
@@ -3152,15 +3160,13 @@ public class GsmCdmaPhone extends Phone {
             case EVENT_GET_N1_MODE_ENABLED_DONE:
                 logd("EVENT_GET_N1_MODE_ENABLED_DONE");
                 ar = (AsyncResult) msg.obj;
+                if (handleUnsupportedN1ModeResponse(ar)) {
+                    break;
+                }
                 if (ar == null || ar.exception != null
                         || ar.result == null || !(ar.result instanceof Boolean)) {
                     Rlog.e(LOG_TAG, "Failed to Retrieve N1 Mode", ar.exception);
-                    if (ar != null && ar.userObj instanceof Message) {
-                        // original requester's message is stashed in the userObj
-                        final Message rsp = (Message) ar.userObj;
-                        AsyncResult.forMessage(rsp, null, ar.exception);
-                        rsp.sendToTarget();
-                    }
+                    sendN1ModeResponse(ar);
                     break;
                 }
 
@@ -3171,17 +3177,16 @@ public class GsmCdmaPhone extends Phone {
             case EVENT_SET_N1_MODE_ENABLED_DONE:
                 logd("EVENT_SET_N1_MODE_ENABLED_DONE");
                 ar = (AsyncResult) msg.obj;
+                if (handleUnsupportedN1ModeResponse(ar)) {
+                    mModemN1Mode = null;
+                    break;
+                }
                 if (ar == null || ar.exception != null) {
                     Rlog.e(LOG_TAG, "Failed to Set N1 Mode", ar.exception);
                     // Set failed, so we have no idea at this point.
                     mModemN1Mode = null;
                 }
-                if (ar != null && ar.userObj instanceof Message) {
-                    // original requester's message is stashed in the userObj
-                    final Message rsp = (Message) ar.userObj;
-                    AsyncResult.forMessage(rsp, null, ar.exception);
-                    rsp.sendToTarget();
-                }
+                sendN1ModeResponse(ar);
                 break;
 
             case EVENT_IMEI_MAPPING_CHANGED:
@@ -3262,6 +3267,46 @@ public class GsmCdmaPhone extends Phone {
         // insufficient because the modem or the RIL could still return exceptions for temporary
         // failures even when the feature is unsupported.
         return (ar == null || ar.exception == null);
+    }
+
+    private boolean handleUnsupportedN1ModeResponse(@Nullable AsyncResult ar) {
+        if (ar == null || !isRequestNotSupported(ar.exception)) {
+            return false;
+        }
+
+        if (mIsN1ModeSupported) {
+            Rlog.i(LOG_TAG, "N1 mode is not supported by the modem");
+        }
+        mIsN1ModeSupported = false;
+        sendN1ModeResponse(ar);
+        return true;
+    }
+
+    private static boolean isRequestNotSupported(@Nullable Throwable exception) {
+        if (!(exception instanceof CommandException commandException)) {
+            return false;
+        }
+        return commandException.getCommandError() == CommandException.Error.REQUEST_NOT_SUPPORTED;
+    }
+
+    private void sendN1ModeResponse(@Nullable AsyncResult ar) {
+        if (ar == null || !(ar.userObj instanceof Message)) {
+            return;
+        }
+
+        final Message rsp = (Message) ar.userObj;
+        AsyncResult.forMessage(rsp, null, ar.exception);
+        rsp.sendToTarget();
+    }
+
+    private void sendUnsupportedN1ModeResponse(@Nullable Message result) {
+        if (result == null) {
+            return;
+        }
+
+        AsyncResult.forMessage(result, null,
+                new CommandException(CommandException.Error.REQUEST_NOT_SUPPORTED));
+        result.sendToTarget();
     }
 
     private void parseImeiInfo(Message msg) {
