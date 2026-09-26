@@ -24,6 +24,7 @@ import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.nullable;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,6 +37,7 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Message;
 import android.os.Messenger;
+import android.os.Process;
 import android.os.UserHandle;
 import android.telephony.AccessNetworkConstants;
 import android.telephony.CellInfoLte;
@@ -136,6 +138,7 @@ public class NetworkScanRequestTrackerTest extends TelephonyTest {
                 .startNetworkScan(any(), any());
         verifyMessage(TelephonyScanManager.CALLBACK_SCAN_ERROR, NetworkScan.ERROR_INVALID_SCAN,
                 mScanId, null);
+        verify(mIBinder).unlinkToDeath(any(), anyInt());
     }
 
     @Test
@@ -588,6 +591,7 @@ public class NetworkScanRequestTrackerTest extends TelephonyTest {
                 Message.obtain(mHandler, TelephonyScanManager.CALLBACK_SCAN_COMPLETE,
                         NetworkScan.SUCCESS, mScanId, null)
         );
+        verify(mIBinder).unlinkToDeath(any(), anyInt());
     }
 
     @Test
@@ -664,6 +668,45 @@ public class NetworkScanRequestTrackerTest extends TelephonyTest {
         verifyStartNetworkScanAndEmulateBinderDied();
 
         verify(mPhone).stopNetworkScan(any());
+    }
+
+    @Test
+    public void testPendingNetworkScan_clientDied_shouldNotBePromoted() throws Exception {
+        mScanId = scanNetworkWithOneShot(true /* renounceFineLocationAccess */);
+
+        IBinder pendingBinder = Mockito.mock(IBinder.class);
+        RadioAccessSpecifier[] specifiers = new RadioAccessSpecifier[]{
+                new RadioAccessSpecifier(AccessNetworkConstants.AccessNetworkType.EUTRAN, null,
+                        null)
+        };
+        NetworkScanRequest request = new NetworkScanRequest(
+                NetworkScanRequest.SCAN_TYPE_ONE_SHOT,
+                specifiers,
+                5 /* searchPeriodicity */,
+                60 /* maxSearchTime in seconds */,
+                true /* incrementalResults */,
+                5 /* incrementalResultsPeriodicity */,
+                null /* PLMNs */);
+        Messenger messenger = new Messenger(mHandler);
+
+        mNetworkScanRequestTracker.startNetworkScan(
+                true, request, messenger, pendingBinder, mPhone,
+                Process.SYSTEM_UID, -1, CLIENT_PKG);
+        processAllMessages();
+
+        ArgumentCaptor<IBinder.DeathRecipient> deathRecipientCaptor =
+                ArgumentCaptor.forClass(IBinder.DeathRecipient.class);
+        verify(pendingBinder).linkToDeath(deathRecipientCaptor.capture(), anyInt());
+
+        deathRecipientCaptor.getValue().binderDied();
+        processAllMessages();
+
+        verify(pendingBinder).unlinkToDeath(any(), anyInt());
+
+        // Finish interrupting the original live scan. The dead pending request
+        // must not be promoted into a new modem scan.
+        verifyStopNetworkScanAndEmulateResult(null /* commandException */);
+        verify(mPhone, times(1)).startNetworkScan(any(), any());
     }
 
     @Test

@@ -49,6 +49,7 @@ import com.android.internal.util.ArrayUtils;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -120,11 +121,13 @@ public final class NetworkScanRequestTracker {
                     // Fallthrough
                 case EVENT_MODEM_RESET:
                     ar = (AsyncResult) msg.obj;
-                    mScheduler.deleteScanAndMayNotify(
-                            (NetworkScanRequestInfo) ar.userObj,
-                            NetworkScan.ERROR_MODEM_ERROR,
-                            true);
-                    ((NetworkScanRequestInfo) ar.userObj).mPhone.setNetworkScanStarted(false);
+                    NetworkScanRequestInfo resetNsri = (NetworkScanRequestInfo) ar.userObj;
+                    if (resetNsri != null) {
+                        resetNsri.mPhone.mCi.unregisterForNetworkScanResult(mHandler);
+                        mScheduler.deleteScanAndMayNotify(
+                                resetNsri, NetworkScan.ERROR_MODEM_ERROR, true);
+                        resetNsri.mPhone.setNetworkScanStarted(false);
+                    }
                     break;
             }
         }
@@ -314,8 +317,14 @@ public final class NetworkScanRequestTracker {
         }
 
         void unlinkDeathRecipient() {
-            if (mBinder != null) {
+            if (mBinder == null) {
+                return;
+            }
+            try {
                 mBinder.unlinkToDeath(this, 0);
+            } catch (NoSuchElementException e) {
+                // The binder may already be dead and have removed this recipient.
+                Log.d(TAG, "Death recipient already unlinked for scan " + mScanId);
             }
         }
 
@@ -411,10 +420,12 @@ public final class NetworkScanRequestTracker {
             if (!isValidScan(nsri)) {
                 notifyMessenger(nsri, TelephonyScanManager.CALLBACK_SCAN_ERROR,
                         NetworkScan.ERROR_INVALID_SCAN, null);
+                nsri.unlinkDeathRecipient();
                 return;
             }
             if (nsri.getIsBinderDead()) {
                 Log.e(TAG, "CMD_START_NETWORK_SCAN: Binder has died");
+                nsri.unlinkDeathRecipient();
                 return;
             }
             if (!startNewScan(nsri)) {
@@ -422,6 +433,7 @@ public final class NetworkScanRequestTracker {
                     if (!cacheScan(nsri)) {
                         notifyMessenger(nsri, TelephonyScanManager.CALLBACK_SCAN_ERROR,
                                 NetworkScan.ERROR_MODEM_UNAVAILABLE, null);
+                        nsri.unlinkDeathRecipient();
                     }
                 }
             }
@@ -482,7 +494,9 @@ public final class NetworkScanRequestTracker {
                     }
                     deleteScanAndMayNotify(nsri, commandExceptionErrorToScanError(error), true);
                 } else {
-                    Log.wtf(TAG, "EVENT_START_NETWORK_SCAN_DONE: ar.exception can not be null!");
+                    Log.wtf(TAG, "EVENT_START_NETWORK_SCAN_DONE: result and exception are null");
+                    deleteScanAndMayNotify(
+                            nsri, NetworkScan.ERROR_RADIO_INTERFACE_ERROR, true);
                 }
             }
         }
@@ -558,6 +572,7 @@ public final class NetworkScanRequestTracker {
                     && uid == mScheduler.mPendingRequestInfo.mUid) {
                 notifyMessenger(mPendingRequestInfo,
                         TelephonyScanManager.CALLBACK_SCAN_COMPLETE, NetworkScan.SUCCESS, null);
+                mPendingRequestInfo.unlinkDeathRecipient();
                 mPendingRequestInfo = null;
             } else {
                 Log.e(TAG, "stopScan: scan " + scanId + " does not exist!");
@@ -580,7 +595,9 @@ public final class NetworkScanRequestTracker {
                             ((CommandException) (ar.exception)).getCommandError();
                     deleteScanAndMayNotify(nsri, commandExceptionErrorToScanError(error), true);
                 } else {
-                    Log.wtf(TAG, "EVENT_STOP_NETWORK_SCAN_DONE: ar.exception can not be null!");
+                    Log.wtf(TAG, "EVENT_STOP_NETWORK_SCAN_DONE: result and exception are null");
+                    deleteScanAndMayNotify(
+                            nsri, NetworkScan.ERROR_RADIO_INTERFACE_ERROR, true);
                 }
             }
         }
@@ -590,6 +607,12 @@ public final class NetworkScanRequestTracker {
             if (mLiveRequestInfo != null && scanId == mLiveRequestInfo.mScanId) {
                 mLiveRequestInfo.mPhone.stopNetworkScan(mHandler.obtainMessage(
                         EVENT_INTERRUPT_NETWORK_SCAN_DONE, mLiveRequestInfo));
+            } else if (mPendingRequestInfo != null
+                    && scanId == mPendingRequestInfo.mScanId) {
+                // A pending request can die before the live scan finishes stopping.
+                // Drop it now so it cannot be promoted after its owner is gone.
+                mPendingRequestInfo.unlinkDeathRecipient();
+                mPendingRequestInfo = null;
             } else {
                 Log.e(TAG, "doInterruptScan: scan " + scanId + " does not exist!");
             }
@@ -658,6 +681,7 @@ public final class NetworkScanRequestTracker {
                 }
                 mLiveRequestInfo.mPhone.mCi.unregisterForModemReset(mHandler);
                 mLiveRequestInfo.mPhone.mCi.unregisterForNotAvailable(mHandler);
+                mLiveRequestInfo.unlinkDeathRecipient();
                 mLiveRequestInfo = null;
                 if (mPendingRequestInfo != null) {
                     startNewScan(mPendingRequestInfo);
