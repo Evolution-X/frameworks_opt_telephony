@@ -76,6 +76,7 @@ import android.net.NetworkStats;
 import android.net.NetworkStats.Entry;
 import android.net.Uri;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
+import android.os.AsyncResult;
 import android.os.Bundle;
 import android.os.Message;
 import android.os.PersistableBundle;
@@ -118,6 +119,7 @@ import com.android.ims.ImsManager;
 import com.android.ims.internal.ConferenceParticipant;
 import com.android.ims.internal.IImsCallSession;
 import com.android.internal.telephony.Call;
+import com.android.internal.telephony.CallFailCause;
 import com.android.internal.telephony.CallStateException;
 import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.Connection;
@@ -974,6 +976,101 @@ public class ImsPhoneCallTrackerTest extends TelephonyTest {
         }
         assertEquals(PhoneConstants.State.IDLE, mCTUT.getState());
         assertEquals(Call.State.IDLE, mCTUT.mForegroundCall.getState());
+    }
+
+    @Test
+    @SmallTest
+    public void testImsMOCallStartFailedAfterLocalHangup() throws Exception {
+        doReturn(false).when(mDomainSelectionResolver).isDomainSelectionSupported();
+        ImsPhoneConnection connection = placeCall();
+        ImsCall imsCall = connection.getImsCall();
+        // Do not let the fixture complete the call with onCallTerminated().
+        doNothing().when(imsCall).terminate(anyInt());
+
+        mImsCallListener.onCallInitiating(imsCall);
+        processAllMessages();
+        assertNull(mCTUT.getPendingMO());
+        assertEquals(Call.State.DIALING, mCTUT.mForegroundCall.getState());
+
+        mCTUT.hangup(connection);
+        processAllMessages();
+        verify(imsCall).terminate(ImsReasonInfo.CODE_USER_TERMINATED);
+        assertEquals(Call.State.DISCONNECTING, mCTUT.mForegroundCall.getState());
+
+        mImsCallListener.onCallStartFailed(imsCall,
+                new ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED, 0));
+        processAllMessages();
+
+        assertEquals(Call.State.DISCONNECTED, connection.getState());
+        assertEquals(DisconnectCause.LOCAL, connection.getDisconnectCause());
+        assertTrue(mCTUT.mForegroundCall.getConnections().isEmpty());
+        assertTrue(mCTUT.getConnections().isEmpty());
+        assertEquals(Call.State.IDLE, mCTUT.mForegroundCall.getState());
+        assertEquals(PhoneConstants.State.IDLE, mCTUT.getState());
+        verify(mImsPhone).notifyDisconnect(connection);
+
+        ImsPhoneConnection nextConnection = placeCall();
+        processAllMessages();
+        assertNotNull(nextConnection.getImsCall());
+        assertEquals(nextConnection, mCTUT.mForegroundCall.getFirstConnection());
+        assertEquals(1, mCTUT.getConnections().size());
+        assertEquals(Call.State.DIALING, mCTUT.mForegroundCall.getState());
+        assertEquals(PhoneConstants.State.OFFHOOK, mCTUT.getState());
+    }
+
+    @Test
+    @SmallTest
+    public void testImsMOCallStartFailedAfterInitiating() {
+        doReturn(false).when(mDomainSelectionResolver).isDomainSelectionSupported();
+        ImsPhoneConnection connection = placeCall();
+        ImsCall imsCall = connection.getImsCall();
+        mImsCallListener.onCallInitiating(imsCall);
+        processAllMessages();
+        assertNull(mCTUT.getPendingMO());
+
+        mImsCallListener.onCallStartFailed(imsCall,
+                new ImsReasonInfo(ImsReasonInfo.CODE_SIP_BUSY, 0));
+        processAllMessages();
+
+        assertEquals(Call.State.DISCONNECTED, connection.getState());
+        assertEquals(DisconnectCause.BUSY, connection.getDisconnectCause());
+        assertTrue(mCTUT.mForegroundCall.getConnections().isEmpty());
+        assertTrue(mCTUT.getConnections().isEmpty());
+        assertEquals(Call.State.IDLE, mCTUT.mForegroundCall.getState());
+        assertEquals(PhoneConstants.State.IDLE, mCTUT.getState());
+        verify(mImsPhone).notifyDisconnect(connection);
+    }
+
+    @Test
+    @SmallTest
+    public void testImsMOCallStartFailedCsRetryAfterProgressing() throws Exception {
+        doReturn(false).when(mDomainSelectionResolver).isDomainSelectionSupported();
+        replaceInstance(Phone.class, "mContext", mImsPhone, mContext);
+        replaceInstance(ImsPhone.class, "mSilentRedialRegistrants", mImsPhone, mRegistrantList);
+        ImsPhoneConnection connection = placeCall();
+        ImsCall imsCall = connection.getImsCall();
+        mImsCallListener.onCallProgressing(imsCall);
+        processAllMessages();
+        assertNull(mCTUT.getPendingMO());
+        assertEquals(Call.State.ALERTING, mCTUT.mForegroundCall.getState());
+
+        mImsCallListener.onCallStartFailed(imsCall,
+                new ImsReasonInfo(ImsReasonInfo.CODE_LOCAL_CALL_CS_RETRY_REQUIRED, 0));
+        processAllMessages();
+
+        ArgumentCaptor<AsyncResult> redialCaptor = ArgumentCaptor.forClass(AsyncResult.class);
+        verify(mRegistrantList).notifyRegistrants(redialCaptor.capture());
+        Phone.SilentRedialParam redial =
+                (Phone.SilentRedialParam) redialCaptor.getValue().result;
+        assertEquals(CallFailCause.LOCAL_CALL_CS_RETRY_REQUIRED, redial.causeCode);
+        assertFalse(redial.dialArgs.isEmergency);
+        assertEquals(EmergencyNumber.EMERGENCY_SERVICE_CATEGORY_UNSPECIFIED,
+                redial.dialArgs.eccCategory);
+        verify(mImsPhone, never()).notifyDisconnect(connection);
+        assertTrue(mCTUT.mForegroundCall.getConnections().isEmpty());
+        assertTrue(mCTUT.getConnections().isEmpty());
+        assertEquals(Call.State.IDLE, mCTUT.mForegroundCall.getState());
+        assertEquals(PhoneConstants.State.IDLE, mCTUT.getState());
     }
 
     @Test

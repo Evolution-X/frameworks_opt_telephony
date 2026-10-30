@@ -3680,6 +3680,10 @@ public class ImsPhoneCallTracker extends CallTracker implements ImsPullCall {
                 updatePhoneState();
                 mPhone.initiateSilentRedial(reasonInfo.getExtraCode() ==
                         ImsReasonInfo.EXTRA_CODE_CALL_RETRY_EMERGENCY, eccCategory);
+            } else if (findConnection(imsCall) != null) {
+                // onCallInitiating and onCallProgressing clear mPendingMO, but a failed call
+                // can still have a tracked connection that needs to be disconnected.
+                sendCallStartFailedDisconnect(imsCall, reasonInfo);
             }
         }
 
